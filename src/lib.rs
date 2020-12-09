@@ -7,7 +7,8 @@ use percent_encoding::{percent_decode, utf8_percent_encode, AsciiSet};
 use serde::{de::DeserializeOwned, Serialize};
 use sha1::Sha1;
 
-pub use coder::{Base64, Coder, Json, Zip};
+pub use coder::{Base64, Json, Zip};
+use coder::Coder;
 
 pub struct Cookie<C> {
     read_write_key: Vec<u8>,
