@@ -3,6 +3,12 @@ name = "rack_session"
 version = "0.1.0"
 authors = ["Mat Sadler <mat@sourcetagsandcodes.com>"]
 edition = "2018"
+description = "Serde support for Ruby's Rack::Session::Cookie encoded cookies"
+homepage = "https://github.com/matsadler/rack_session"
+repository = "https://github.com/matsadler/rack_session"
+license = "MIT"
+keywords = ["rack", "session", "cookie", "serde"]
+categories = ["authentication", "web-programming"]
 
 [dependencies]
 base64 = "0.13"
