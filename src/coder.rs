@@ -41,6 +41,7 @@ pub unsafe trait Coder: BinaryCoder {
     }
 }
 
+/// Coder for Base64 encoded cookies.
 pub struct Base64<C> {
     phantom: PhantomData<C>,
 }
@@ -129,6 +130,7 @@ where
 {
 }
 
+/// Coder for Zipped cookies.
 pub struct Zip<C> {
     phantom: PhantomData<C>,
 }
@@ -198,6 +200,7 @@ where
     }
 }
 
+/// Coder for JSON encoded cookies.
 pub enum Json {}
 
 impl BinaryCoder for Json {

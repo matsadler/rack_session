@@ -1,3 +1,65 @@
+//! A library for interoperability with Ruby's `Rack::Session::Cookie` http
+//! cookie encoding.
+//!
+//! This library provides serde compatible encoding and decoding, plus message
+//! authentication of client side session cookies.
+//!
+//! # Examples
+//!
+//! Encoding:
+//!
+//! ```
+//! use serde::{Deserialize, Serialize};
+//! 
+//! use rack_session::{Base64, Cookie, Json};
+//! 
+//! #[derive(Debug, Deserialize, PartialEq, Serialize)]
+//! struct Session {
+//!     session_id: String,
+//!     user_id: Option<u64>,
+//!     is_signed_in: bool,
+//! }
+//! 
+//! let cookie = Cookie::<Base64<Json>>::new("super secret");
+//! 
+//! let session = Session {
+//!     session_id: String::from("ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"),
+//!     user_id: Some(42),
+//!     is_signed_in: true,
+//! };
+//! 
+//! assert_eq!(
+//!     cookie.to_string(&session).unwrap(),
+//!     "eyJzZXNzaW9uX2lkIjoiYWM3NjJiZjU2ZjczNjBmYzQ1NzAxZmY4MzczZWQ1MTljMTAzNzYyYmY1N2JlYzA5ZDUyODA2NTlmNTljYjAzOCIsInVzZXJfaWQiOjQyLCJpc19zaWduZWRfaW4iOnRydWV9--a49a66f88f64651f2c5846c90ff42dd8d31fe96c"
+//! );
+//! ```
+//!
+//! Decoding:
+//!
+//! ```
+//! use serde::{Deserialize, Serialize};
+//! 
+//! use rack_session::{Base64, Cookie, Json};
+//! 
+//! #[derive(Debug, Deserialize, PartialEq, Serialize)]
+//! struct Session {
+//!     session_id: String,
+//!     user_id: Option<u64>,
+//!     is_signed_in: bool,
+//! }
+//! 
+//! let cookie = Cookie::<Base64<Json>>::new("super secret");
+//! 
+//! assert_eq!(
+//!     cookie.from_str::<Session>("eyJzZXNzaW9uX2lkIjoiYWM3NjJiZjU2ZjczNjBmYzQ1NzAxZmY4MzczZWQ1MTljMTAzNzYyYmY1N2JlYzA5ZDUyODA2NTlmNTljYjAzOCIsInVzZXJfaWQiOjQyLCJpc19zaWduZWRfaW4iOnRydWV9--a49a66f88f64651f2c5846c90ff42dd8d31fe96c").unwrap(),
+//!     Session {
+//!         session_id: String::from("ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"),
+//!         user_id: Some(42),
+//!         is_signed_in: true,
+//!     }
+//! );
+//! ```
+
 mod coder;
 
 use std::{error::Error as StdError, marker::PhantomData};
@@ -10,6 +72,7 @@ use sha1::Sha1;
 pub use coder::{Base64, Json, Zip};
 use coder::Coder;
 
+/// A structure for encoding, decoding, and message authentication of cookies.
 pub struct Cookie<C> {
     read_write_key: Vec<u8>,
     read_keys: Vec<Vec<u8>>,
@@ -17,6 +80,11 @@ pub struct Cookie<C> {
 }
 
 impl<C> Cookie<C> {
+    /// Construct a new `Cookie` with the given `read_write_key` for message
+    /// authentication when encoding and decoding cookies.
+    ///
+    /// `read_write_key` is effectivly the `secret` argument from Ruby's
+    /// `Rack::Session::Cookie`.
     pub fn new<I: Into<Vec<u8>>>(read_write_key: I) -> Self {
         Self {
             read_write_key: read_write_key.into(),
@@ -25,11 +93,17 @@ impl<C> Cookie<C> {
         }
     }
 
+    /// Add `read_key` as a second (third, etc) key to try for authentication
+    /// when decoding cookies.
+    ///
+    /// This is effectivly the `old_secret` argument from Ruby's
+    /// `Rack::Session::Cookie`.
     pub fn add_read_key<I: Into<Vec<u8>>>(&mut self, read_key: I) {
         self.read_keys.push(read_key.into());
     }
 }
 
+/// An error that can be returned when decoding a cookie.
 #[derive(Debug)]
 pub enum DecodeError {
     Utf8,
@@ -70,6 +144,7 @@ impl From<coder::ZipError> for DecodeError {
     }
 }
 
+/// An error that can be returned when encoding a cookie.
 #[derive(Debug)]
 pub enum EncodeError {
     Coder(Box<dyn StdError>),
@@ -95,6 +170,12 @@ where
     DecodeError: From<C::DecodeError>,
     EncodeError: From<C::EncodeError>,
 {
+    /// Decode a session of type `T` from the given string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the string is badly formatted, the message
+    /// authentication fails, or the coder can not decode the session.
     pub fn from_str<T>(&self, s: &str) -> Result<T, DecodeError>
     where
         T: DeserializeOwned,
@@ -124,6 +205,11 @@ where
         Err(error.unwrap().into())
     }
 
+    /// Encode a session to a String.
+    ///
+    /// # Errors
+    ///
+    /// If the coder can not encode the session then an error is returned.
     pub fn to_string<T>(&self, value: &T) -> Result<String, EncodeError>
     where
         T: Serialize,
