@@ -10,24 +10,24 @@
 //!
 //! ```
 //! use serde::{Deserialize, Serialize};
-//! 
-//! use rack_session::{Base64, Cookie, Json};
-//! 
+//!
+//! use rack_session::{Base64, Cookie, Id, Json};
+//!
 //! #[derive(Debug, Deserialize, PartialEq, Serialize)]
 //! struct Session {
-//!     session_id: String,
+//!     session_id: Id,
 //!     user_id: Option<u64>,
 //!     is_signed_in: bool,
 //! }
-//! 
+//!
 //! let cookie = Cookie::<Base64<Json>>::new("super secret");
-//! 
+//!
 //! let session = Session {
-//!     session_id: String::from("ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"),
+//!     session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038".parse().unwrap(),
 //!     user_id: Some(42),
 //!     is_signed_in: true,
 //! };
-//! 
+//!
 //! assert_eq!(
 //!     cookie.to_string(&session).unwrap(),
 //!     "eyJzZXNzaW9uX2lkIjoiYWM3NjJiZjU2ZjczNjBmYzQ1NzAxZmY4MzczZWQ1MTljMTAzNzYyYmY1N2JlYzA5ZDUyODA2NTlmNTljYjAzOCIsInVzZXJfaWQiOjQyLCJpc19zaWduZWRfaW4iOnRydWV9--a49a66f88f64651f2c5846c90ff42dd8d31fe96c"
@@ -38,22 +38,22 @@
 //!
 //! ```
 //! use serde::{Deserialize, Serialize};
-//! 
-//! use rack_session::{Base64, Cookie, Json};
-//! 
+//!
+//! use rack_session::{Base64, Cookie, Id, Json};
+//!
 //! #[derive(Debug, Deserialize, PartialEq, Serialize)]
 //! struct Session {
-//!     session_id: String,
+//!     session_id: Id,
 //!     user_id: Option<u64>,
 //!     is_signed_in: bool,
 //! }
-//! 
+//!
 //! let cookie = Cookie::<Base64<Json>>::new("super secret");
-//! 
+//!
 //! assert_eq!(
 //!     cookie.from_str::<Session>("eyJzZXNzaW9uX2lkIjoiYWM3NjJiZjU2ZjczNjBmYzQ1NzAxZmY4MzczZWQ1MTljMTAzNzYyYmY1N2JlYzA5ZDUyODA2NTlmNTljYjAzOCIsInVzZXJfaWQiOjQyLCJpc19zaWduZWRfaW4iOnRydWV9--a49a66f88f64651f2c5846c90ff42dd8d31fe96c").unwrap(),
 //!     Session {
-//!         session_id: String::from("ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"),
+//!         session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038".parse().unwrap(),
 //!         user_id: Some(42),
 //!         is_signed_in: true,
 //!     }
@@ -62,15 +62,105 @@
 
 mod coder;
 
-use std::{error::Error as StdError, marker::PhantomData};
+use std::{
+    convert::Infallible, default::Default, error::Error as StdError, fmt, marker::PhantomData,
+    str::FromStr,
+};
 
 use hmac::{Hmac, Mac, NewMac};
 use percent_encoding::{percent_decode, utf8_percent_encode, AsciiSet};
-use serde::{de::DeserializeOwned, Serialize};
+use rand::Rng;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha1::Sha1;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
-pub use coder::{Base64, Json, Zip};
-use coder::Coder;
+pub use coder::{Base64, Coder, Json, Zip};
+
+/// A Session ID value.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Id(String);
+
+impl Id {
+    /// Construct a new random Id.
+    pub fn new() -> Id {
+        Self::default()
+    }
+
+    /// Construct a new random Id with the `sidbits` and `secure_random`
+    /// parameters similar to the Ruby implementation.
+    ///
+    /// `sidbits` sets the number of bits in length that a generated session id
+    /// will be.
+    pub fn with_config<T: Rng>(sidbits: usize, secure_random: Option<&mut T>) -> Id {
+        let mut buf = Vec::with_capacity(sidbits / 4);
+        match secure_random {
+            Some(rng) => {
+                // I guess it's a mistake, but when the secure_random option
+                // is supplied in the original Ruby code (which it is by
+                // default) then the id generated is twice sidbits
+                buf.resize(sidbits / 4, 0);
+                rng.fill(&mut buf[..]);
+            }
+            None => {
+                buf.resize(sidbits / 8, 0);
+                // this is more 'secure' than needed to match the Ruby
+                // implementation, but it's actually a real hassle to use a
+                // non-secure rng
+                rand::thread_rng().fill(&mut buf[..]);
+            }
+        }
+        Id(hex::encode(buf))
+    }
+
+    /// A derived ID that is safe to look up in an indexed data store,
+    /// mitigating timing attacks
+    pub fn private_id(&self) -> PrivateId {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.0);
+        let result = hasher.finalize();
+        PrivateId(format!("2::{}", hex::encode(result)))
+    }
+}
+
+impl Default for Id {
+    fn default() -> Self {
+        Self::with_config(128, Some(&mut rand::thread_rng()))
+    }
+}
+
+impl Eq for Id {}
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for Id {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl PartialEq for Id {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_bytes().ct_eq(other.0.as_bytes()).into()
+    }
+}
+
+/// A Private Session ID value.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PrivateId(String);
+
+impl fmt::Display for PrivateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// A structure for encoding, decoding, and message authentication of cookies.
 pub struct Cookie<C> {
@@ -162,7 +252,36 @@ impl From<coder::ZipError> for EncodeError {
     }
 }
 
-const WWWCOMP_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS.add(b' ').add(b'!').add(b'"').add(b'#').add(b'$').add(b'%').add(b'&').add(b'\'').add(b'(').add(b')').add(b'+').add(b',').add(b'/').add(b':').add(b';').add(b'<').add(b'=').add(b'>').add(b'?').add(b'@').add(b'[').add(b'\\').add(b']').add(b'^').add(b'`').add(b'{').add(b'|').add(b'}').add(b'~'); // "
+const WWWCOMP_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'!')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}')
+    .add(b'~'); // "
 
 impl<C> Cookie<C>
 where
@@ -220,7 +339,11 @@ where
         mac.update(data.as_bytes());
         let hmac = hex::encode(mac.finalize().into_bytes());
 
-        Ok(format!("{}--{}", utf8_percent_encode(&data, WWWCOMP_ENCODE_SET), hmac))
+        Ok(format!(
+            "{}--{}",
+            utf8_percent_encode(&data, WWWCOMP_ENCODE_SET),
+            hmac
+        ))
     }
 }
 
@@ -228,11 +351,11 @@ where
 mod tests {
     use serde::{Deserialize, Serialize};
 
-    use super::{Base64, Cookie, Json, Zip};
+    use super::{Base64, Cookie, Id, Json, Zip};
 
-    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
     struct Session {
-        session_id: String,
+        session_id: Id,
         foo: String,
         baz: i64,
         qux: Vec<String>,
@@ -248,7 +371,8 @@ mod tests {
             session,
             Session {
                 session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"
-                    .into(),
+                    .parse()
+                    .unwrap(),
                 foo: "bar".into(),
                 baz: 123,
                 qux: vec!["a".into(), "b".into(), "c".into()],
@@ -267,7 +391,8 @@ mod tests {
             session,
             Session {
                 session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"
-                    .into(),
+                    .parse()
+                    .unwrap(),
                 foo: "bar".into(),
                 baz: 123,
                 qux: vec!["a".into(), "b".into(), "c".into()],
@@ -285,7 +410,8 @@ mod tests {
             session,
             Session {
                 session_id: "68a1064d819ac5e9d4a0370131d5a79ce688a3677faf15a6cc4fc56ab486423a"
-                    .into(),
+                    .parse()
+                    .unwrap(),
                 foo: "bar".into(),
                 baz: 123,
                 qux: vec!["a".into(), "b".into(), "c".into()],
@@ -298,7 +424,9 @@ mod tests {
         let cookie = Cookie::<Base64<Json>>::new("super secret");
 
         let session = Session {
-            session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038".into(),
+            session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"
+                .parse()
+                .unwrap(),
             foo: "bar".into(),
             baz: 123,
             qux: vec!["a".into(), "b".into(), "c".into()],
@@ -312,7 +440,9 @@ mod tests {
         let cookie = Cookie::<Base64<Zip<Json>>>::new("super secret");
 
         let session = Session {
-            session_id: "68a1064d819ac5e9d4a0370131d5a79ce688a3677faf15a6cc4fc56ab486423a".into(),
+            session_id: "68a1064d819ac5e9d4a0370131d5a79ce688a3677faf15a6cc4fc56ab486423a"
+                .parse()
+                .unwrap(),
             foo: "bar".into(),
             baz: 123,
             qux: vec!["a".into(), "b".into(), "c".into()],

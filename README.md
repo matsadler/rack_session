@@ -57,11 +57,11 @@ default `Base64::Marshal` coder class can not be implemented.
 ```rust
 use serde::{Deserialize, Serialize};
 
-use rack_session::{Base64, Cookie, Json};
+use rack_session::{Base64, Cookie, Id, Json};
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct Session {
-    session_id: String,
+    session_id: Id,
     user_id: Option<u64>,
     is_signed_in: bool,
 }
@@ -70,7 +70,7 @@ fn main() {
     let cookie = Cookie::<Base64<Json>>::new("super secret");
 
     let session = Session {
-        session_id: String::from("ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038"),
+        session_id: "ac762bf56f7360fc45701ff8373ed519c103762bf57bec09d5280659f59cb038".parse().unwrap(),
         user_id: Some(42),
         is_signed_in: true,
     };
